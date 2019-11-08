@@ -1,0 +1,251 @@
+schedules:
+  - cron: "0 0 * * *"
+    displayName: Daily insiders build
+    branches:
+      include:
+        - master
+    always: true
+
+trigger:
+  tags:
+    include:
+      - '*'
+
+stages:
+  - stage: unitTest
+    condition: ne(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+    jobs:
+      - job: unit
+        strategy:
+          matrix:
+            linux:
+              imageName: 'ubuntu-16.04'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+            mac:
+              imageName: 'macos-10.14'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/rebuild-steps.yml
+          - template: azure-templates/unit-test-steps.yml
+
+  - stage: cucumberTest
+    condition: ne(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+
+    jobs:
+      - job: cucumber
+        strategy:
+          matrix:
+            cucumber:
+              imageName: 'ubuntu-16.04'
+            cucumber_other:
+              imageName: 'ubuntu-16.04'
+              OTHER_FABRIC: 'true'
+
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/cucumber-steps.yml
+
+  - stage: jestTest
+    condition: ne(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+    jobs:
+      - job: jest
+        strategy:
+          matrix:
+            linux:
+              imageName: 'ubuntu-16.04'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+            mac:
+              imageName: 'macos-10.14'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/rebuild-steps.yml
+          - template: azure-templates/jest-test-steps.yml
+
+  - stage: cypressTest
+    condition: ne(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+    jobs:
+      - job: cypress
+        strategy:
+          matrix:
+            linux:
+              imageName: 'ubuntu-16.04'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+            mac:
+              imageName: 'macos-10.14'
+              VERSION: '1.35.1'
+              MODULES: 64
+              ELECTRON: '3.0'
+              TARGET: '3.0.0'
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/rebuild-steps.yml
+          - template: azure-templates/cypress-steps.yml
+
+
+
+  - stage: buildPackage
+    dependsOn:
+      - unitTest
+      - cucumberTest
+      - jestTest
+      - cypressTest
+    jobs:
+      - job: buildPackage
+
+        pool:
+          vmImage: 'ubuntu-16.04'
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+
+          - bash: |
+              set -ev
+              npm run package
+
+          - task: CopyFiles@2
+            inputs:
+              sourceFolder: '$(Build.SourcesDirectory)'
+              contents: '*.vsix'
+              targetFolder: '$(Build.ArtifactStagingDirectory)'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: vscode-package
+
+  - stage: deploy
+    condition: and(succeeded(), startsWith(variables['Build.SourceBranch'], 'refs/tags'))
+    dependsOn:
+      - unitTest
+      - cucumberTest
+      - jestTest
+      - cypressTest
+      - buildPackage
+    jobs:
+      - job:
+        pool:
+          vmImage: 'ubuntu-16.04'
+        steps:
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: vscode-package
+              path: $(Build.SourcesDirectory)
+
+          - bash: |
+              set -ev
+              npm install vsce
+              node ./node_modules/vsce/out/vsce publish -p $(VSCETOKEN)
+            displayName: Publish extension
+            condition: succeeded()
+
+          - bash: |
+              set -ev
+
+              git checkout master
+
+              npm install semver
+
+              # Bump the version number.
+              node ./.azure/pkgbump.js
+
+              export NEW_VERSION=$(node -e "console.log(require('./package.json').version)")
+
+              # Change from HTTPS to SSH.
+              .azure/fix_github_https_repo.sh
+
+              # Add the version number changes and push them to Git.
+              git config user.name "$(GH_USER_NAME)"
+              git config user.email "$(GH_USER_EMAIL)"
+              git add .
+              git commit -m "Automatic version bump to ${NEW_VERSION}"
+              git push origin master
+            displayName: Version bump
+            condition: succeeded()
+
+  - stage: otherVersionsUnitTest
+    condition: eq(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+    jobs:
+      - job: unit
+        strategy:
+          matrix:
+            insiders_linux:
+              imageName: 'ubuntu-16.04'
+              VERSION: 'insiders'
+              MODULES: 73
+              ELECTRON: '6.0'
+              TARGET: '6.0.12'
+            insiders_mac:
+              imageName: 'macos-10.14'
+              VERSION: 'insiders'
+              MODULES: 73
+              ELECTRON: '6.0'
+              TARGET: '6.0.12'
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/rebuild-steps.yml
+          - template: azure-templates/unit-test-steps.yml
+
+  - stage: otherVersionsCucumberTest
+    condition: eq(variables['Build.Reason'], 'Schedule')
+    dependsOn: []
+    jobs:
+      - job: cucumber
+        strategy:
+          matrix:
+            insiders_cucumber:
+              imageName: 'ubuntu-16.04'
+              VERSION: 'insiders'
+            insiders_cucumber_other:
+              imageName: 'ubuntu-16.04'
+              OTHER_FABRIC: 'true'
+              VERSION: 'insiders'
+            old_cucumber:
+              imageName: 'ubuntu-16.04'
+              VERSION: '1.38.1'
+            old_cucumber_other:
+              imageName: 'ubuntu-16.04'
+              OTHER_FABRIC: 'true'
+              VERSION: '1.38.1'
+        pool:
+          vmImage: $(imageName)
+
+        steps:
+          - template: azure-templates/setup-steps.yml
+          - template: azure-templates/cucumber-steps.yml
